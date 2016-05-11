@@ -206,6 +206,7 @@ class Memcache(AgentCheck):
 
                 # Access the dict
                 stats = raw_stats[0][1]
+                prefix = "memcache.{}".format(arg)
                 for metric, val in stats.iteritems():
                     # Check if metric is a gauge or rate
                     metric_tags = []
@@ -213,16 +214,16 @@ class Memcache(AgentCheck):
                         metric, metric_tags, val = self._get_items_stats(metric, val)
 
                     if optional_gauges and metric in optional_gauges:
-                        our_metric = self.normalize(metric.lower(), 'memcache')
+                        our_metric = self.normalize(metric.lower(), prefix)
                         self.gauge(our_metric, float(val), tags=tags+metric_tags)
                     elif optional_rates and metric in optional_rates:
                         our_metric = self.normalize(
-                            "{0}_rate".format(metric.lower()), 'memcache')
+                            "{0}_rate".format(metric.lower()), prefix)
                         self.rate(our_metric, float(val), tags=tags+metric_tags)
             except AssertionError:
                 self.log.warning(
                     "Unable to retrieve optional stats from memcache instance, "
-                    "they could be empty or bad configuration."
+                    "running 'stats %s' they could be empty or bad configuration.", arg
                 )
             except Exception as e:
                 self.log.excetion(

@@ -3,6 +3,7 @@ import memcache
 
 # project
 from checks import AgentCheck
+from config import _is_affirmative
 
 # Ref: http://code.sixapart.com/svn/memcached/trunk/server/doc/protocol.txt
 # Name              Type     Meaning
@@ -102,18 +103,32 @@ class Memcache(AgentCheck):
         "listen_disabled_num"
     ]
 
+    ITEMS_GAUGES = [
+        "number",
+        "age",
+        "evicted",
+        "evicted_nonzero",
+        "evicted_time",
+        "outofmemory",
+        "tailrepairs",
+        "reclaimed",
+        "expired_unfetched",
+        "evicted_unfetched",
+    ]
+
+    # format - "key": (rates, gauges, handler)
+    OPTIONAL_STATS = {
+        "items": [None, ITEMS_GAUGES, None],
+    }
+
     SERVICE_CHECK = 'memcache.can_connect'
 
     def get_library_versions(self):
         return {"memcache": memcache.__version__}
 
-    def _get_metrics(self, server, port, tags):
-        mc = None  # client
-        service_check_tags = ["host:%s" % server, "port:%s" % port]
+    def _get_metrics(self, client, tags, service_check_tags=None):
         try:
-            self.log.debug("Connecting to %s:%s tags:%s", server, port, tags)
-            mc = memcache.Client(["%s:%s" % (server, port)])
-            raw_stats = mc.get_stats()
+            raw_stats = client.get_stats()
 
             assert len(raw_stats) == 1 and len(raw_stats[0]) == 2,\
                 "Malformed response: %s" % raw_stats
@@ -174,18 +189,60 @@ class Memcache(AgentCheck):
                 self.SERVICE_CHECK, AgentCheck.CRITICAL,
                 tags=service_check_tags,
                 message="Unable to fetch stats from server")
-            raise Exception(
-                "Unable to retrieve stats from memcache instance: {0}:{1}."
-                "Please check your configuration".format(server, port))
+            raise
 
-        if mc is not None:
-            mc.disconnect_all()
-            self.log.debug("Disconnected from memcached")
-        del mc
+
+    def _get_optional_metrics(self, client, tags):
+        for arg, metrics in self.OPTIONAL_STATS.iteritems():
+            try:
+                optional_rates = metrics[0]
+                optional_gauges = metrics[1]
+                optional_fn = metrics[2]
+
+                raw_stats = client.get_stats(arg)
+
+                assert len(raw_stats) == 1 and len(raw_stats[0]) == 2,\
+                    "Malformed response: %s" % raw_stats
+
+                # Access the dict
+                stats = raw_stats[0][1]
+                for metric, val in stats.iteritems():
+                    # Check if metric is a gauge or rate
+                    metric_tags = []
+                    if optional_fn:
+                        metric, metric_tags, val = self._get_items_stats(metric, val)
+
+                    if optional_gauges and metric in optional_gauges:
+                        our_metric = self.normalize(metric.lower(), 'memcache')
+                        self.gauge(our_metric, float(val), tags=tags+metric_tags)
+                    elif optional_rates and metric in optional_rates:
+                        our_metric = self.normalize(
+                            "{0}_rate".format(metric.lower()), 'memcache')
+                        self.rate(our_metric, float(val), tags=tags+metric_tags)
+            except AssertionError:
+                self.log.warning(
+                    "Unable to retrieve optional stats from memcache instance, "
+                    "they could be empty or bad configuration."
+                )
+            except Exception as e:
+                self.log.excetion(
+                    "Unable to retrieve optional stats from memcache instance: ", e
+                )
+
+    def _get_items_stats(self, key, value):
+        itemized_key = key.split(':')
+        slab_id = itemized_key[1]
+        metric = itemized_key[2]
+
+        tags = ["slab:{}".format(slab_id)]
+
+        return metric, tags, value
 
     def check(self, instance):
         socket = instance.get('socket')
         server = instance.get('url')
+        optional_metrics = _is_affirmative(instance.get('optional_metrics', False))
+
         if not server and not socket:
             raise Exception('Either "url" or "socket" must be configured')
 
@@ -196,6 +253,29 @@ class Memcache(AgentCheck):
             port = int(instance.get('port', self.DEFAULT_PORT))
         custom_tags = instance.get('tags') or []
 
+        mc = None  # client
         tags = ["url:{0}:{1}".format(server, port)] + custom_tags
+        service_check_tags = ["host:%s" % server, "port:%s" % port]
 
-        self._get_metrics(server, port, tags)
+        try:
+            self.log.debug("Connecting to %s:%s tags:%s", server, port, tags)
+            mc = memcache.Client(["%s:%s" % (server, port)])
+
+            self._get_metrics(mc, tags, service_check_tags)
+            if optional_metrics:
+                # setting specific handlers
+                self.OPTIONAL_STATS["items"][2] = self._get_items_stats
+                self._get_optional_metrics(mc, tags)
+        except AssertionError:
+            self.service_check(
+                self.SERVICE_CHECK, AgentCheck.CRITICAL,
+                tags=service_check_tags,
+                message="Unable to fetch stats from server")
+            raise Exception(
+                "Unable to retrieve stats from memcache instance: {0}:{1}."
+                "Please check your configuration".format(server, port))
+
+        if mc is not None:
+            mc.disconnect_all()
+            self.log.debug("Disconnected from memcached")
+        del mc

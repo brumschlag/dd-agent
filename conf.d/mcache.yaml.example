@@ -6,3 +6,6 @@ instances:
   #   port: 11211 # If this line is not present, port will default to 11211
   #   tags:
   #     - optional_tag
+
+  #   optional_metrics: false # set `optional_metrics` if you wish to collect additional
+                              # memcached stats.

@@ -230,6 +230,14 @@ class Memcache(AgentCheck):
                 )
 
     def _get_items_stats(self, key, value):
+        """
+        Optional metric handler for 'items' stats
+
+        key: "items:<slab_id>:<metric_name>" format
+        value: return untouched
+
+        Like all optional metric handlers returns metric, tags, value
+        """
         itemized_key = key.split(':')
         slab_id = itemized_key[1]
         metric = itemized_key[2]
